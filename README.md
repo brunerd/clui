@@ -18,9 +18,12 @@ Input can be:
 
 Output Options
 
+ -D  Discrete fields for char descriptions from CharacterDB and localized AppleName.strings
+
  Encoding style for UTF
   -E <encoding>
-     h*   Capitalized space delimited UTF-8 hexadecimal (NN) (default)
+     h*   UTF-8 hexadecimal, space delimited and capitalized (NN) (default)
+     H    Hex HTML Entity UTF-32 (&#xnnnn;)
      0    Octal UTF-8 with leading 0 (\0nnn)
      o    Octal UTF-8 (\nnn)
      x    Shell style UTF-8 hex(\xnn)
@@ -61,6 +64,9 @@ Alternate Input Options
      c    Search for character usage in other sequences
      C    Search for character usage plus "related characters"
 
+ -l <localization>  
+     Use -Ll to list avaiable localizations, for Emoji only
+
  -V  Verbatim, process input as-is without delimitation or conversion of code points
   
 Other Modes
@@ -71,6 +77,7 @@ Other Modes
      C    Category list, with subsections expanded
      g    Groups of categories, top level name
      G    Group name with member categories expanded
+     l    Locales to search and display results from (Emoji only) 
      
      Use -C or -G to retrieve members of the categories or groups, respectively
 
@@ -86,6 +93,9 @@ Examples:
 
   Get every character in Emoji category and output in RTF to a file
   clui -Or -C Emoji > Emoji.rtf
+
+  All characters in Emoji category with discrete info fields in Spanish to a CSV to a file
+  clui -D -l es -C Emoji > Emoji-es.csv
 
   Search descriptions for substring "family" and expand multi-code point ZWJ sequences 
   clui -X -Sd "family"
