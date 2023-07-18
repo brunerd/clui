@@ -13,13 +13,24 @@ Input can be:
   * Unicode characters, space or comma delimited (use -x to expand non-delimited strings)
   * Hexadecimal codepoint representations (U+hhhhh or 0xhhhhh), double-quoted muti-point sequences
   * Hyphenated ranges (ascending or descending): z-a, U+A1-U+BF or 0x20-0x7E
-  * Category or Group names (see Alternate Input Options)
-  * Descriptive words or phrases (see Alternate Input Options)
+  * Category or Group names (see Input Options)
+  * Descriptive words or phrases (see Input Options)
 
 Output Options
 
- -D  Discrete fields for char descriptions from CharacterDB and localized AppleName.strings
+ -D  Discrete fields for CharacterDB and localized AppleName.strings
 
+ -f <char size, info size>  set font size of characters and info in RTF output (default: 256,32)
+
+ -h  Hide headers for CSV output
+
+ -H  Hide characters lacking descriptions
+
+ -l <localization>  
+     Show localized results (Emoji only), use -Ll to list available localizations
+
+ -p  Preserve case of CharacterDB description/info          
+ 
  Encoding style for UTF
   -E <encoding>
      h*   UTF-8 hexadecimal, space delimited and capitalized (NN) (default)
@@ -31,12 +42,6 @@ Output Options
      U    zsh style UTF-32 Unicode Code Point (\Unnnnnnnn)
      w    Web/URL UTF-8 encoding (%nn)
 
- -f <char size, info size>  set font size of characters and info in RTF output (default: 256,32)
- -F  Remove Fitzpatrick skin tone modifier, get description, then process normally as-is
-
- -h  Hide headers for CSV output
- -H  Hide characters lacking descriptions
-
  Output format 
   -O <output format>
      C*   CSV (default)
@@ -46,26 +51,28 @@ Output Options
      p    Plain output (no field descriptions)
      r    RTF output (plain output with large sized characters)
      y    YAML output
-          
- -x  Expand, describe each individual code point in a sequence
- -X  Expand plus display original sequence prior to expansion
      
-Alternate Input Options
+Input Options
 
  -C <Category>[,Subsection]
-      Treat input as a Category name with possible a subsection
+      Treat input as a Category name with possible a subsection (see -L for listing)
+
+ -F  Remove Fitzpatrick skin tone modifier and process, then process as-is
 
  -G <Group>[,Category]
-      Treat input as a Group name with possible category name
-
- Search mode
-  -S <mode>  
-     d    Description search
-     c    Search for character usage in other sequences
-     C    Search for character usage plus "related characters"
+      Treat input as a Group name with possible category name (see -L for listing)
 
  -l <localization>  
-     Use -Ll to list avaiable localizations, for Emoji only
+     Search localized descriptions (Emoji only), use -Ll to list available localizations
+
+ -S <mode>  
+    Treat input as search criteria
+    d    Search descriptions in CharacterDB and AppleName.strings (case insensitive)
+    c    Search for character in other Unicode sequences
+    C    Search for character plus "related characters"
+
+ -x  Expand, describe each individual code point in a sequence
+ -X  Expand plus display original sequence prior to expansion
 
  -V  Verbatim, process input as-is without delimitation or conversion of code points
   
@@ -77,10 +84,8 @@ Other Modes
      C    Category list, with subsections expanded
      g    Groups of categories, top level name
      G    Group name with member categories expanded
-     l    Locales to search and display results from (Emoji only) 
+     l    Locales available to search and display results from (Emoji only) 
      
-     Use -C or -G to retrieve members of the categories or groups, respectively
-
  -u  Display usage info (aka help) with less (press q to quit)
   
 Examples:
