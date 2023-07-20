@@ -1,0 +1,1079 @@
+#!/bin/bash
+: <<-LICENSE_BLOCK
+clui - Command Line Unicode Info, Copyright (c) 2023 Joel Bruner (https://github.com/brunerd/clui)
+Licensed under the MIT License
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+LICENSE_BLOCK
+
+#############
+# FUNCTIONS #
+#############
+
+function outputCharInfo(){
+
+	#GLOBAL booleans: FONTSIZE_LARGE, FONTSIZE_SMALL, HIDE_UNDESCRIBED, LOCALE, and HAD_OUTPUT
+	#positional parameters
+	local string="${1}"; [ -z "${string}" ] && return
+	local outputOption="${2:-CSV}"
+	local encodingScheme="${3:-h}"
+
+	#font size defaults for RTF output (-Or)
+	#the character/sequence
+	local default_fontSize_large="256"
+	#the info, code points, and UTF
+	local default_fontSize_small="32"
+
+	#member names for JSON and YAML objects
+	#the star of the show
+	local fieldName_string="char"
+	#info/description from both CharacterDB.sqlite3 and AppleName.strings, can be broken out individually or ; delimited (if more than one)
+	local fieldName_info="info"
+	
+	#later if DISCRETE_DESCRIPTIONS is true use these field names
+	[ "${LOCALE:=en}" != "en" ] && local locale_suffix="-${LOCALE}"
+	#make discrete names used for JSON and YAML
+	local fieldName_info1="${fieldName_info}-chardb"
+	local fieldName_info2="${fieldName_info}-emoji${locale_suffix}"
+
+	local fieldName_codePoints="cp"
+	#this will have the bit depth and encoding type appended
+	local fieldName_encoding="utf"
+	
+	#internal variables
+	local IFS=$'\n'; local i; local encodedString; local str_codePoint; local byte
+
+	#jse JSON String encoder
+	function jse() (
+		#jse - JSON String Encoder (https://github.com/brunerd/jse) Copyright (c) 2022 Joel Bruner, Licensed under the MIT License
+		set +x; read -r -d '' JSCode <<-'EOT'
+		var argument=decodeURIComponent(escape(arguments[0]));var fileFlag=decodeURIComponent(escape(arguments[1]));if(fileFlag){try{vartext=readFile(argument)} catch(error){throw new Error(error);quit()};if(argument==="/dev/stdin"){text=text.slice(0,-1)}}else{var text=argument};print(JSON.stringify(text,null,0))
+		EOT
+		jsc=$(find "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/" -name 'jsc');[ -z "${jsc}" ] && jsc=$(which jsc);if ([ -n "${ARGC}" ] && [ "${ARGC}" = "0" ]) || ([ -z "${ARGC}" ] && [ "${#BASH_ARGC[@]}" = "0" ]); then if [ -f '/dev/stdin' ]; then fileFlag=1; argument="/dev/stdin"; elif [ -t '0' ]; then exit 0; fi; elif [ "${1}" = "-f" ] && [ -n "${2}" ]; then if [ ! -f "${2}" ]; then echo "File not found: ${2}";exit 1; else fileFlag=1; argument="${2}"; fi; else argument="${1}"; fi; if [ -z "${argument}" ] && [ ! -t '0' ]; then "${jsc}" -e "${JSCode}" -- "/dev/stdin" "1" <<< "$(cat)"; else "${jsc}" -e "${JSCode}" -- "${argument}" "${fileFlag}"; fi
+	)
+
+	function encodeRTF(){
+		local needsCtrlSeq=1
+		local OPTIND
+		local OPTARG
+	
+		while getopts ":f:" option; do
+			case "${option}" in
+				f)
+					local fontsize="${OPTARG}"
+					((${fontsize})) && echo "\\fs${fontsize} "
+				;;
+			esac
+		done
+	
+		#if required shift parameters, OPTIND is only set after getopts
+		[ ${OPTIND} -ge 2 ] && shift $((OPTIND-1))
+
+		local string="${1}"
+
+		#go through each character
+		for ((i=0;;i++)); do
+			local char="${string:i:1}"
+			[ -z "${char}" ] && break
+			local charDecimal=$(/usr/bin/printf "%d" "'${char}")
+			#anything in these ranges encode
+			if ((charDecimal <= 0x1F)) || ((charDecimal > 0x7E)); then
+				((needsCtrlSeq)) && echo -En "\\uc0"
+				#make UTF-16 in hex, add 0x prefix with sed, then convert to decimal and prefix with \u for RTF 
+				printf '\\u%04d ' $(echo -n "${char}" | iconv -t UTF-16BE | xxd -p -c2 | sed 's/..../0x&/g')
+				needsCtrlSeq=0
+			else
+				#a few ascii chars need escaping
+				case "${char}" in
+					#just add a backslach before { } and \
+					'{'|'}'|'\')
+						echo -En $(sed 's/\\/\\\\/g;s/[{}]/\\&/g' <<< "${char}") 
+					;;
+					#output all else as-is
+					*)					
+						printf "%s" "${char}"
+					;;
+				esac
+			fi
+		done
+		#end of line
+		echo "\\"
+	}
+		
+	#build variable str_codePoint (U+nnnn ...)
+	while [ -n "${string:$i:1}" ]; do
+		#code point (6 padded for max 10FFFF value)
+		local codePoint=$(/usr/bin/printf "%06X" \'"${string:$i:1}")	
+		#space depending
+		[ -z "${str_codePoint}" ] && space="" || space=" "
+		#trim off leading zeroes except for single digit characters
+		str_codePoint+="${space}U+$(sed -E 's/^0{0,4}//g' <<< "${codePoint}")"
+		let i++
+	done
+
+	#build encodedString encoded one of these ways
+	case "${encodingScheme}" in
+		#utf-8 octal \nnn (-Eo) or \0nnn (-E0)
+		o|0)
+			#append bit depth and encoding type
+			[ "${encodingScheme}" = "0" ] && { zero="0"; fieldName_encoding+="-8 0-octal-sh"; } || fieldName_encoding+="-8 octal-sh"
+			for byte in $(echo -En "${string}" | xxd -p -c1 -u); do 
+				#use shell hex conversion along with printf
+				encodedString+="$(printf "\\\\${zero}%03o" $((0x${byte})))"
+			done
+			;;
+		#Web (URL) encoding %nn (-Ew)
+		w)
+			#append bit depth and encoding type
+			fieldName_encoding+="-8 url"
+			#print encodedString encoded \x escape style, leave xxd output unquoted to leverage each line as argument for printf
+			encodedString="$(printf "%%%s" $(echo -En "${string}" | xxd -p -c1 -u))"
+			;;
+		#zsh UTF-32 code point \Unnnnnnnn (-EU)
+		U)
+			fieldName_encoding+="-32 zsh"
+			for ((i=0;;i++)); do
+				[ -z "${string:i:1}" ] && break
+				#printf in bash 3.x cannot print Code points but /usr/bin/printf can
+				encodedString+="$(/usr/bin/printf "\\\\U%08X" \'"${string:i:1}")"
+			done
+			;;
+		#JS UTF-16 \unnnn (-Eu)
+		u)
+			fieldName_encoding+="-16 JS"
+			for (( i=0;; i++ )); do	
+				[ -z "${string:i:1}" ] && break
+				#print UTF16 encoded \u escape style, leave xxd output unquoted to leverage each line as argument for printf
+				encodedString+="$(printf "\\\\u%s%s" $(echo -n "${string:$i:1}" | iconv -f utf-8 -t utf-16be | xxd -p -c1))"
+			done
+			;;
+		#utf-8 shell escaped \xnn (-Ex) [DEFAULT]
+		x)
+			fieldName_encoding+="-8 hex-sh"
+			#print encodedString encoded \x escape style, leave xxd output unquoted to leverage each line as argument for printf
+			encodedString="$(printf "\\\\x%s" $(echo -En "${string}" | xxd -p -c1 -u))"
+		;;
+		#HTML Entity &#xnnnn;
+		H)
+			fieldName_encoding+="-32 HTML Entity"
+			for ((i=0;;i++)); do
+				[ -z "${string:i:1}" ] && break
+				#printf in bash 3.x cannot print Code points but /usr/bin/printf can
+				encodedString+="$(/usr/bin/printf "&#x%X;" \'"${string:i:1}")"
+			done
+			;;		
+		## default (or -Eh) capitalized space delimited hex bytes NN NN NN NN
+		'h'|*)
+			fieldName_encoding+="-8 hex"
+			#UTF8 Hex string
+			encodedString="$(echo -En "${string}" | xxd -c0 -p -u | sed -e 's/\(..\)/\1 /g' -e 's/ $//')  "
+			;;
+	esac
+
+	#clean up trailing spaces
+	encodedString=$(echo -n "${encodedString}" | sed -E 's/ +$//')
+
+	#get description
+	local description=$(getDescriptionByCharMatch "${string}")
+	#break apart if needed
+	if ((DISCRETE_DESCRIPTIONS)); then
+		local info1=$(echo -n "${description}" | sed -n "1p")
+		local info2=$(echo -n "${description}" | sed -n "2p")
+	fi
+
+	#if no description and global "HIDE_UNDESCRIBED" is true (1), return
+	if [ -z "${description}" ] && ((${HIDE_UNDESCRIBED})); then 
+		return
+	fi
+
+	case ${outputOption} in
+		"JSON"*)
+			#JSON formatting variables
+			case "${outputOption}" in
+				"JSONSEQ")
+					local recSep=$'\x1E'
+					local seq_nl=$'\n'
+					local spc=' '
+					;;
+				"JSON")
+					local spc='    '
+					local objspc='  '
+					local comma=,
+
+					#JSON object(s) will be inside an array	and comma separated
+					if ((${NEEDSHEADER:=1})); then
+						#start the array
+						JSON_format=$'[\n'
+					else
+						JSON_format=$',\n'
+					fi
+					;;
+			esac
+			
+			if ((DISCRETE_DESCRIPTIONS)); then
+				local infoblock="${spc}\"${fieldName_info1}\": $(jse "${info1}" 2>/dev/null),
+${spc}\"${fieldName_info2}\": $(jse "${info2}" 2>/dev/null),"
+			else
+				local infoblock="${spc}\"${fieldName_info}\": $(jse "${description}" 2>/dev/null),"
+			fi
+			
+			#create JSON output
+			local output="${JSON_format}${recSep}${objspc}{"$'\n'"${spc}\"${fieldName_string:=string}\": $(jse "${string}" 2>/dev/null),
+${infoblock}
+${spc}\"${fieldName_codePoints}\": \"${str_codePoint}\",
+${spc}\"${fieldName_encoding}\": $(jse "${encodedString}" 2>/dev/null)
+${objspc}}${seq_nl}"
+
+			#output in one atomic chunk so if TERM is trapped the closing ] for JSON array will always be correct
+			echo -n "${output}"
+			;;
+		"YAML")
+			if ((DISCRETE_DESCRIPTIONS)); then
+				local infoblock="${fieldName_info1}: $(jse "${info1}" 2>/dev/null)
+  ${fieldName_info2}: $(jse "${info2}" 2>/dev/null)"
+			else
+				local infoblock="${fieldName_info}: $(jse "${description}" 2>/dev/null)"
+			fi
+
+			local output="- ${fieldName_string}: $(jse "${string}" 2>/dev/null)
+  ${infoblock}
+  ${fieldName_codePoints}: ${str_codePoint}
+  ${fieldName_encoding}: ${encodedString}"
+  			echo "${output}"
+			;;
+		"PLAIN")
+			output="--
+${string}
+${description}
+${str_codePoint}
+${encodedString}"
+			echo "${output}"
+			;;
+		"CHARACTER")
+			((HAD_OUTPUT)) && local char_space=" "
+			#just the character
+			echo -n "${char_space}${string}"
+			;;
+		"RTF")
+			#use global var to keep track of this
+			if ((${NEEDSHEADER:=1})); then
+				echo '{\rtf1\ansi\ansicpg1252\cocoartf2709
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww15000\viewh16000\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+'
+			fi
+			output="$(encodeRTF -f ${FONTSIZE_LARGE:=$default_fontSize_large} "${string}")
+$(encodeRTF -f ${FONTSIZE_SMALL:=$default_fontSize_small} "${description}")
+${str_codePoint}\\
+${encodedString}\\
+--\\
+"
+			echo -n "${output}"
+			;;
+		"CSV"|*)
+			#if any of these character are present, enclose character in quotes and escape any existing quotes
+			if [ "${string}" = $'\n' ]; then
+				string="\"${string}\""
+			elif grep -q -e \" -e "," -e " " -e $'\a' -e $'\e' -e $'\f' -e $'\r' -e $'\t' -e $'\v' -e $'\x7F' <<< "${string}"  || [[ "${string}" == *$'\n'* ]]; then
+				string="\"$(sed -e 's/"/""/g' <<< "${string}")\""
+			fi
+			
+			#if description has comma or newline then enclose in quotes 
+			if ((DISCRETE_DESCRIPTIONS)); then
+				if grep -q -e "," <<< "${info1}"; then 
+					info1="\"${info1}\""
+				fi
+
+				if grep -q -e "," <<< "${info2}"; then 
+					info1="\"${info2}\""
+				fi
+
+				description="${info1},${info2}"
+			else
+				#no descriptions contain straight quotes, curly quotes only
+				#description=$(sed -e 's/"/""/' <<< "${description}")
+
+				#quote if comma found
+				if grep -q -e "," <<< "${description}"; then 
+					description="\"${description}\""
+				fi
+			fi
+
+			#print header if needed and not explicitly blocked
+			if ! ((headerOff)) && ((${NEEDSHEADER:=1})); then 
+				if ((DISCRETE_DESCRIPTIONS)); then
+					echo "${fieldName_string},${fieldName_info1},${fieldName_info2},${fieldName_codePoints},${fieldName_encoding}"
+				else
+					echo "${fieldName_string},${fieldName_info},${fieldName_codePoints},${fieldName_encoding}"
+				fi
+			fi
+
+			if ((DISCRETE_DESCRIPTIONS)); then
+				echo "${string},${info1},${info2},${str_codePoint},${encodedString}"
+			else
+				echo "${string},${description},${str_codePoint},${encodedString}"
+			fi
+		;;	
+	esac
+
+	#GLOBALS
+	NEEDSHEADER=0
+	HAD_OUTPUT=1
+}
+
+#get the description
+function getDescriptionByCharMatch(){
+
+	local char="${1}"
+	[ -z "${char}" ] && return
+		
+	#database lookup info
+	local databasePath="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/CharacterDB.sqlite3"
+	local dbTable="unihan_dict"
+	local char_fieldName="uchr"
+	local desc_fieldName="info"
+	
+	#both kinds of quotes in the string?! forget about it!
+	(grep -q -e \" <<< "${char}" && grep -q -e \' <<< "${char}") && return
+	#set quote type depending on char
+	grep -q -e \" <<< "${char}" && local quote="'" || local quote='"'
+
+	#remove trailing/repeating | only
+	local chardb_description=$(sqlite3 "${databasePath}" "SELECT ${desc_fieldName} FROM \`${dbTable}\` where ${char_fieldName} == ${quote}${char}${quote};" | sed -E -e 's/\|*$//')
+	#lowercase for comparison
+	local chardb_description_lower=$(awk '{print tolower($0)}' <<< "${chardb_description}")
+	
+	#if has fitzpatrick, remove and try again
+	if [ -z "${chardb_description}" ] && hasFitzpatrickMod "${char}"; then
+		chardb_description=$(sqlite3 "${databasePath}" "SELECT ${desc_fieldName} FROM \`${dbTable}\` where ${char_fieldName} == ${quote}$(filterFitzpatrickModifier "${char}")${quote};" | sed -E -e 's/\|*$//')
+		chardb_description_lower=$(awk '{print tolower($0)}' <<< "${chardb_description}")
+	fi
+		
+	#escape characters problematic for PlistBuddy: colon, space, solidus, tab (even though they shouldn't be in here, you never know what the future may bring)
+	[ "${char}" != $'\n' ] && char=$(sed -e 's/\\/\\\\/g;s/ /\\ /g;s/:/\\:/g;s/\t/\\\t/g' <<< "${char}")
+
+	#try a CoreEmoji lookup in AppleName.strings, an XML doc with each character is it's own dictionary entry	
+	local PlistPath="/System/Library/PrivateFrameworks/CoreEmoji.framework/Versions/A/Resources/${LOCALE:=en}.lproj/AppleName.strings"
+
+	#get description from CoreEmoji AppleName.string in whatever locale
+	local emoji_description=$(/usr/libexec/PlistBuddy -c "print :${char}" "${PlistPath}" 2>/dev/null)
+	#for comparison only
+	local emoji_description_lower=$(awk '{print tolower($0)}' <<< "${emoji_description}")
+
+	#try without fitzpatrick if present
+	if [ -z "${emoji_description}" ] && hasFitzpatrickMod "${char}"; then
+		local tempchar="$(filterFitzpatrickModifier "${char}")"
+		#just in case it's fitzpatrick(s) only and nothing is left
+		if [ -n "${tempchar}" ]; then
+			emoji_description=$(/usr/libexec/PlistBuddy -c "print :${tempchar}" "${PlistPath}" 2>/dev/null | awk '{print tolower($0)}')
+			emoji_description_lower=$(awk '{print tolower($0)}' <<< "${emoji_description}")
+		fi
+	fi
+	
+	#output 
+	if ((DISCRETE_DESCRIPTIONS)); then
+		if ((preserveCase)); then
+			echo -n "${chardb_description}"$'\n'"${emoji_description}"
+		else
+			echo -n "${chardb_description_lower}"$'\n'"${emoji_description}"
+		fi		
+	#if the lowescase is the same, use AppleName.strings b/c capitalization is sane
+	elif [ "${emoji_description_lower}" = "${chardb_description_lower}" ]; then
+		echo -n "${emoji_description}"
+	else
+		([ -n "${chardb_description}" ] && [ -n "${emoji_description}" ]) && local separator=";"
+		((preserveCase)) && echo -n "${chardb_description}${separator}${emoji_description}" || echo -n "${chardb_description_lower}${separator}${emoji_description}"
+	fi
+}
+
+#search in descriptions of CharacterDB.sqlite3 and AppleName.strings
+function getCharsByDescriptionSearch(){
+	local searchstring="${1}"
+	local databasePath="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/CharacterDB.sqlite3"
+	local dbTable="unihan_dict"
+	local char_fieldName="uchr"
+	local desc_fieldName="info"
+	
+	#strip newlines - otherwise weird search results can happen
+	searchstring=$(echo -n "${searchstring}" | tr -d $'\n')
+	
+	#nothing left? go back
+	[ -z "${searchstring}" ] && return
+	
+	#both quotes forget about it
+	(grep -q -e \" <<< "${char}" && grep -q -e \' <<< "${char}") && return
+	#set quote depending on string
+	grep -q -e \" <<< "${char}" && local quote="'" || local quote='"'
+
+	#CharacterDB results, info is upper so convert search to upper
+	local matchingChars=$(sqlite3 "${databasePath}" "SELECT uchr FROM \`${dbTable}\` WHERE instr(${desc_fieldName}, UPPER(${quote}${searchstring}${quote})) > 0 OR instr(${desc_fieldName}, LOWER(${quote}${searchstring}${quote})) > 0;")
+	[ -n "${matchingChars}" ] && matchingChars+=$'\n'
+
+	local PlistPath="/System/Library/PrivateFrameworks/CoreEmoji.framework/Versions/A/Resources/${LOCALE:=en}.lproj/AppleName.strings"
+	#add results from coreemoji
+	matchingChars+=$(plutil -convert json -o - "${PlistPath}" | sed -e 's/","/\n/g' -e '1 s/^{"//' -e '$ s/"}$//' -e 's/":"/\x1E/g' | awk '{print tolower($0)}' | awk -F $'\x1E' '$2 ~ /'"${searchstring}"'/ {print $1}')$'\n'	
+
+	sed 's/^$//g' <<< "${matchingChars}" | sort | uniq
+}
+
+#find chacter usage in all glyphs
+function findMatchingChars(){
+	local char="${1}"
+	
+	[ -z "${char}" ] && return 1
+	[ "${char}" = $'\n' ] && return 1
+
+	#strip newlines - otherwise weird search results can happen
+	char=$(echo -n "${char}" | tr -d $'\n')
+	
+	local PlistPath="/System/Library/PrivateFrameworks/CoreEmoji.framework/Versions/A/Resources/${LOCALE:=en}.lproj/AppleName.strings"
+	#coreemoji	search, convert to json then massage down to CSV
+	#\ escape any regex conflicting characters: \ | . / + * ^ $ [ (
+	local awk_char="$(echo -n "${char}" | sed -e 's/[\\\|\./\+\*^$[(?]/\\&/g')"
+	local matchingChars=$(plutil -convert json -o - "${PlistPath}" |  sed -e $'s/",/\\n/g' | sed -e '1 s/^{//' -e 's/^"//g' -e 's/":"/,/g' -e '$ s/}$//' | awk -F , '$1 ~ /'"${awk_char}"'/ {print $1}')
+	[ -n "${matchingChars}" ] && matchingChars+=$'\n'
+
+	local databasePath="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/CharacterDB.sqlite3"
+	local dbTable="unihan_dict"
+	local char_fieldName="uchr"
+	local desc_fieldName="info"
+
+	#both quotes forget about it
+	(grep -q -e \" <<< "${char}" && grep -q -e \' <<< "${char}") && return
+	#set quote depending on string
+	grep -q -e \" <<< "${char}" && local quote="'" || local quote='"'
+
+	#characterdb
+	#local query_char=$(echo -n "${char}" | sed -e 's/[\*]/\\&/g')
+	matchingChars+=$(sqlite3 "${databasePath}" "SELECT uchr FROM \`${dbTable}\` WHERE instr(${char_fieldName}, ${quote}${char}${quote}) > 0;")
+
+	#sort and uniq
+	local matchingChars=$(echo -n "${matchingChars}" | sort | uniq)
+	echo "${matchingChars}"
+}
+
+#Apple maintains a db with look-a-like characters for Latin chars (and some others)
+function getRelatedCharacters(){
+	local char="${1}"
+	
+	local databasePath="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/RelatedCharDB.sqlite3"
+	local dbTable="related_dict"
+	local fieldName="relatedChars"
+	
+	#no db file? return!
+	! [ -f "${databasePath}" ] && return
+	
+	#both quotes forget about it
+	(grep -q -e \" <<< "${char}" && grep -q -e \' <<< "${char}") && return
+	#set quote depending on string
+	grep -q -e \" <<< "${char}" && local quote="'" || local quote='"'
+
+	local characters=$(sqlite3 "${databasePath}" "SELECT ${fieldName} FROM \`${dbTable}\` WHERE instr(${fieldName}, ${quote}${char}${quote}) > 0;")
+	
+	#return newline delimited list (all these chars are only 1 code point)
+	echo "${characters}" | sed $'s/./&\\n/g'
+}
+
+#list locales for AppleName.strings
+function listLocales(){
+	ls -1 "/System/Library/PrivateFrameworks/CoreEmoji.framework/Versions/A/Resources" | awk -F . '/lproj$/ {print $1}'
+}
+
+#macOS has groupings within the categories plist
+function listcategoryGroups(){
+	local expandGroup="${1}"
+	local cfile="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/Categories.plist"
+	
+	#no category file? return!
+	! [ -f "${cfile}" ] && return
+	
+	if ! ((headerOff)); then
+		if ((expandGroup)); then 
+			echo "Group Name,Categoy Name"
+		else
+			echo "Group Name"
+		fi
+	fi
+	
+	local alength=$(plutil -extract CVAvailableCategories raw "${cfile}" -o -)
+	for ((i=0;i < alength;i++)); do
+		groupname=$(plutil -extract CVAvailableCategories.$i.Group raw "${cfile}" | sed 's/CategoryGroup-//g')
+		if ! ((expandGroup)); then
+			#strip off prefix
+			echo "${groupname/#CategoryGroup-}"
+		else
+			local alength_2=$(plutil -extract CVAvailableCategories.$i.Categories raw "${cfile}" -o -)
+			for ((j=0; j < alength_2; j++)); do
+				catName=$(plutil -extract CVAvailableCategories.$i.Categories.$j raw "${cfile}" -o - | sed -e 's/^Category-//')
+				echo "${groupname},${catName}"
+			done
+		fi
+	done | sort | sed -e '/^$/d' -e '/Dingbats/d'
+}
+
+#macos has category plist files with comma delimited characters and 0x entries and ranges
+function listCategories(){
+	#bool
+	local expandCategory="${1}"
+	local sectionName
+	local cfile
+	local cname
+	local list
+	
+	local searchPath="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources"
+
+	#simple list of all the Category files
+	local categoryPaths_raw=$(find "${searchPath}" -name 'Category*.plist' | sort)
+
+	#nothing found? return!
+	[ -z "${categoryPaths_raw}" ] && return
+
+	#find the ones with CVCategoryData
+	local IFS=$'\n'
+	for cfile in ${categoryPaths_raw}; do
+		if plutil -type CVCategoryData "${cfile}" >/dev/null; then
+			categoryPaths+="${cfile}"$'\n'
+		fi
+	done
+
+	#header
+	if ! ((headerOff)); then
+		if ((expandCategory)); then
+			echo "Category Name,Section Name"
+		else
+			echo "Category Name"
+		fi
+	fi
+
+	#we need to further investigate each member for array within CVCategoryData
+	for cfile in ${categoryPaths}; do
+		#the name without path or prefix "Category-" or extension ".plist"
+		cname=$(sed -e "s|${searchPath}/Category-||g" -e 's/\.plist$//g' -e '/^$/d' <<< "${cfile}")
+
+		#these have an array named DataArray instead of a string name Data
+		if plutil -type CVCategoryData.DataArray -expect array "${cfile}" >/dev/null; then			
+			if ((expandCategory)); then
+				#loop through all the sections and name them
+				local alength=$(plutil -extract CVCategoryData.DataArray raw "${cfile}")
+				for ((i=0;i < alength;i++)); do
+					sectionName=$(plutil -extract CVCategoryData.DataArray.$i.CVDataTitle raw "${cfile}" | sed 's/SectionTitle-//g')
+					list+="${cname},${sectionName}"$'\n'
+				done
+			else
+				list+="${cname}*"$'\n'
+			fi
+		else
+			list+="${cname}"$'\n'
+		fi
+	done
+	#manually add Emoji category
+	list+="Emoji"$'\n'
+	sort <<< "${list}" | sed -e '/Favorites/d' -e '/Recents/d' -e '/^$/d'
+}
+
+#macos has category plist files with comma delimited characters and 0x entries and ranges
+function getCategoryCharacters(){
+
+	#strip off trailing, leading whitespace, and * from end (list function)
+	local categoryArgument=$(sed -e $'s/^[ \t]*//' -e $'s/[ \t]*$//' -e 's/\*$//' <<< "${1}")
+	local categoryName=$(awk -F ',' '{print $1}' <<< "${categoryArgument}")
+	local categorySection=$(awk -F ',' '{print $2}' <<< "${categoryArgument}")
+	local data
+	
+	#our category file in the file system	
+	local cfile="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/Category-${categoryName}.plist"
+
+	#emoji shows up but does not have a category file
+	if [ "${categoryName}" = "Emoji" ]; then
+		#add from coreemoji AppleName.strings
+		local PlistPath="/System/Library/PrivateFrameworks/CoreEmoji.framework/Versions/A/Resources/${LOCALE:=en}.lproj/AppleName.strings"
+		#get all the object names with sed, delimit using 0x1E (record separator) and get the first field
+		data=$(plutil -convert json -o - "${PlistPath}" | sed -e 's/","/\n/g' -e '1 s/^{"//' -e '$ s/"}$//' -e 's/":"/\x1E/g' | awk -F $'\x1E' '{print $1}')	
+		#remove empty line, sort, uniq, comma delimit and output results
+		sed 's/^$//g' <<< "${data}" | sort | uniq | tr $'\n' ","
+		return
+	elif ! [ -f "${cfile}" ]; then
+		echo "Category not found: ${categoryName}" >&2
+		return
+	fi
+	
+	#if a section name is specified
+	if [ -n "${categorySection}" ]; then
+		local alength=$(plutil -extract CVCategoryData.DataArray raw "${cfile}")
+
+		for ((i=0;i < alength;i++)); do
+			local sectionName=$(plutil -extract CVCategoryData.DataArray.$i.CVDataTitle raw "${cfile}" | sed 's/SectionTitle-//')
+			if [ "$sectionName" = "${categorySection}" ]; then
+				data=$(plutil -extract CVCategoryData.DataArray.$i.Data raw "${cfile}" | sed 's/SectionTitle-//g')
+				echo "${data}"
+				return
+			fi
+		done
+	#else only category specified (which may or may not contain sections)
+	else
+		#just a single sectioned category file
+		if data=$(plutil -extract CVCategoryData.Data raw -o - "${cfile}"); then
+			echo "${data}"
+		#if we have a dataArray we'll need to loop
+		elif plutil -type CVCategoryData.DataArray -expect array "${cfile}" >/dev/null; then
+			local alength=$(plutil -extract CVCategoryData.DataArray raw "${cfile}")
+			for ((i=0;i < alength;i++)); do
+				data=$(plutil -extract CVCategoryData.DataArray.$i.Data raw "${cfile}" | sed 's/SectionTitle-//g')
+				echo "${data}"
+			done
+		fi
+	fi	
+}
+
+#groups are comprised of categories, clui can iterate through all of them or individual categories
+function getCategoryGroupCharacters(){
+
+	#strip off trailing, leading whitespace, and * from end (list function)
+	local groupArgument=$(sed -e $'s/^[ \t]*//' -e $'s/[ \t]*$//' <<< "${1}")
+	local groupName=$(awk -F ',' '{print $1}' <<< "${groupArgument}")
+	local groupCategory=$(awk -F ',' '{print $2}' <<< "${groupArgument}")
+	
+	local cfile="/System/Library/Input Methods/CharacterPalette.app/Contents/Resources/Categories.plist"
+	
+	! [ -f "${cfile}" ] && return
+	
+	#if a category name is also specified
+	if [ -n "${groupCategory}" ]; then
+		echo $(getCategoryCharacters "${groupCategory}")
+	#else only group name specified, retrieve all categories within
+	else
+		#get array length
+		local alength=$(plutil -extract CVAvailableCategories raw "${cfile}")
+		#iterate over
+		for ((i=0;i < alength;i++)); do
+			#find group name
+			local gname=$(plutil -extract CVAvailableCategories.$i.Group raw "${cfile}" | sed 's/^CategoryGroup-//')
+			if [ "${gname}" = "${groupName}" ]; then
+				local alength_2=$(plutil -extract CVAvailableCategories.$i.Categories raw "${cfile}")
+				#loop through this array and print each categories chars
+				for ((j=0; j < alength_2; j++)); do
+					local groupCategory=$(plutil -extract CVAvailableCategories.$i.Categories.$j raw "${cfile}" | sed 's/^Category-//')
+					[ -z "${groupCategory}" ] && break
+					echo "$(getCategoryCharacters "${groupCategory}")"
+				done
+				break
+			fi
+		done
+	fi	
+	
+}
+
+function filterFitzpatrickModifier(){
+	echo -n "${1}" | sed $'s/[\xF0\x9F\x8F\xBB\xF0\x9F\x8F\xBC\xF0\x9F\x8F\xBD\xF0\x9F\x8F\xBE\xF0\x9F\x8F\xBF]//g'
+}
+
+function hasFitzpatrickMod(){
+	if grep -q -E $'[\xF0\x9F\x8F\xBB\xF0\x9F\x8F\xBC\xF0\x9F\x8F\xBD\xF0\x9F\x8F\xBE\xF0\x9F\x8F\xBF]' <<< "${1}"; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+#turn code point representations into literal characters
+function processCodePoints(){
+	local string="${1}"
+	local newString=""
+	local IFS=' '
+	local element
+	
+	#space delimited
+	for element in ${string}; do
+		case "${element}" in
+			0[Xx]*|[Uu]+*)
+				#gets first and possible first and second element, trim leading zeroes (but not 0x0 or 0x00 so we can handle later)
+				local first=$(awk -F '-' '{print $1}' <<< "${element}" | sed -E -e 's/^[Uu]\+//;s/^0[Xx]//' -e 's/^0{3,}//')
+				local second=$(awk -F '-' '{print $2}' <<< "${element}" | sed -E -e 's/^[Uu]\+//;s/^0[Xx]//' -e 's/^0{3,}//')
+
+				#validate 1-6 hex character only
+				if ! grep -q -E "^[0-9a-fA-F]{1,6}$" <<< "${first}" || ([ -n "${second}" ] && ! grep -q -E "^[0-9a-fA-F]{1,6}$" <<< "${second}"); then
+					echo "Invalid hexadecimal range: ${element}" >&2
+					continue
+				fi
+	
+				#ensure values lower than limit of Unicode
+				if ((0x${first} > 0x10ffff)) || ((0x${second} > 0x10ffff)); then
+					echo "Values cannot be greater than 10ffff: ${element}" >&2
+					continue
+				fi
+
+				#from 0x0-0x0?! you weirdo. bash vars can't handle nulls, while zsh does: it's not in chardb anyway so we just ignore!
+				[ $((0x${first})) -eq 0 ] && [ $((0x${second})) -eq 0 ] && echo "" && return
+
+				#if this is a range and an entry is 0 (NULL) we are going to fudge it to 1 so category "Unicode,Basic Latin" doesn't fail
+				if [ -n "${first}" ] && [ -n "${second}" ] ; then
+					[ $((0x${first})) -eq 0 ] && first=1
+					[ $((0x${second})) -eq 0 ] && second=1
+				fi
+
+				newString+=$(unichr $((0x${first})))
+				#note if this is a range include hyphen
+				[ -n "${second}" ] && newString+="-$(unichr $((0x${second})))"				
+			;;
+			#literal character or character range
+			*)
+				newString+="${element}"
+			;;
+		esac
+	done 
+	printf "%s" "${newString}"
+}
+
+#produces Unicode given a code point value (in decimal)
+function unichr(){
+#based on https://stackoverflow.com/a/16509364 from Orwellophile
+
+	#used by fast_char
+	local CHAR
+
+    local charDecimal="${1}"    
+    local byteCounter=0
+	# o - Ceiling decreases from 63 to 31, 15, and finally 7
+    local ceiling=63
+    # Accum. bits out of 256, starts at 128 increments to 192, 224, and 240 (differences of 128, 64, 32, and 16)
+    local accumBits=128    
+	#output string
+    local str=''    # Output string
+
+	#convert decimal to character
+	function fast_char() {
+		local __octal
+		printf -v __octal '%03o' $1
+		printf -v CHAR \\$__octal
+	}
+
+	! ((charDecimal)) && echo $'\0' && return
+
+    #if this is in the surrogate range (0xD800-0xDFFF), bail
+    ((( charDecimal >= 0xD800 )) && (( charDecimal <= 0xDFFF ))) && return
+
+	#if it's under 0x80 quickly print it out and return
+    (( charDecimal < 0x80 )) && { fast_char "${charDecimal}"; printf "%s" "${CHAR}"; return; }
+
+	#work through each byte, as long as the ordinal is bigger than the ceiling (which decreases from 63 to 31, 15, and finally 7)
+    while (( charDecimal > ceiling )); do
+    	#fast_char $(( t = 0x80 | charDecimal & 0x3f ))
+        fast_char $(( 0x80 | charDecimal & 0x3f ))
+        #prepend the reply (we are working backward through the encoding)
+        str="${CHAR}${str}"
+        (( charDecimal >>= 6, byteCounter++, accumBits += ceiling+1, ceiling>>=1 ))    
+    done
+
+	#final byte
+    fast_char $(( accumBits | charDecimal ))
+
+	#append final char for output
+    echo -nE "${CHAR}${str}"
+}
+
+function finishUp(){
+	#no need to close up?
+	! ((HAD_OUTPUT)) && exit
+
+	#close output
+	case "${outputOption}" in
+		#output breaks on objects, close out the array of them
+		"JSON") echo -e '\n]' ;;
+		#rtf can deal with sudden closure anywhere
+		"RTF") echo '}';;
+		#it just looks nice yeah?
+		"CHARACTER") echo "" ;;
+	esac
+	exit	
+}
+
+function printUsage(){
+	helpText="clui (1.0) - Command Line Unicode Info (https://github.com/brunerd/clui)\nUsage: clui [options] <input> ...\n\nInput can be:\n  * Unicode characters, space or comma delimited (use -x to expand non-delimited strings)\n  * Hexadecimal codepoint representations (U+hhhhh or 0xhhhhh), double-quoted muti-point sequences\n  * Hyphenated ranges (ascending or descending): z-a, U+A1-U+BF or 0x20-0x7E\n  * Category or Group names (see Input Options)\n  * Descriptive words or phrases (see Input Options)\n\nOutput Options\n\n -D  Discrete info fields for CharacterDB and localized AppleName.strings\n\n -H  Hide characters lacking info descriptions\n\n -l <localization>  \n     Show localized info (Emoji only). Use -Ll to list available localizations.\n\n -p  Preserve case of CharacterDB info          \n \n Encoding style for UTF field\n  -E <encoding>\n     h*   UTF-8 hexadecimal, space delimited and capitalized (NN) (default)\n     H    Hex HTML Entity UTF-32 (&#xnnnn;)\n     0    Octal UTF-8 with leading 0 (\\\\0nnn)\n     o    Octal UTF-8 (\\\\nnn)\n     x    Shell style UTF-8 hex(\\\\xnn)\n     u    JS style UTF-16 (\\\\unnnn)\n     U    zsh style UTF-32 Unicode Code Point (\\\\Unnnnnnnn)\n     w    Web/URL UTF-8 encoding (%nn)\n\n Output format \n  -O <output format>\n     C*   CSV (default)\n     c    Character-only, space delimited\n     j    JSON output (array of objects)\n     J    JSON Sequence output (objects delimited by 0x1E and 0x0A)\n     p    Plain output (no field descriptions)\n     r    RTF output (plain output with large sized characters)\n     y    YAML output\n\n  Format dependent output options\n   -f <char size, info size>  set font size for RTF output of char and info fields (default: 256,32)\n   -h  Hide headers for CSV output\n     \nInput Options\n\n -C <Category>[,Subsection]\n      Treat input as a Category name with possible a subsection (see -L for listing)\n\n -F  Remove Fitzpatrick skin tone modifier and process, then process as-is\n\n -G <Group>[,Category]\n      Treat input as a Group name with possible category name (see -L for listing)\n\n -l <localization>  \n     Search localized descriptions (Emoji only), use -Ll to list available localizations\n\n -S <mode>  \n    Treat input as search criteria\n    d    Search descriptions in CharacterDB and AppleName.strings (case insensitive)\n    c    Search for character in other Unicode sequences\n    C    Search for character plus \"related characters\"\n\n -x  Expand and describe each individual code point in a sequence\n -X  Expand plus display original sequence prior to expansion\n\n -V  Verbatim, process input raw/as-is, no additional interpretation or delimitation\n  \nOther Modes\n\n List categories and groups\n  -L <mode>  List categories or groups in CSV (use -h to suppress header)\n     c    Category list (* after a name denotes subsections)\n     C    Category list, with subsections expanded\n     g    Groups of categories, top level name\n     G    Group name with member categories expanded\n     l    Locales available to search and display results from (Emoji only) \n     \n -u  Display usage info (aka help) with less (press q to quit)\n  \nExamples:\n\n  Search for characters a to z plus \"related characters\" and output as CSV (default)\n  clui -SC a-z\n\n  Look up all available Categories\n  clui -Lc\n\n  Get every character in Emoji category and output in RTF to a file\n  clui -Or -C Emoji > Emoji.rtf\n\n  All characters in Emoji category with discrete info fields in Spanish to a CSV to a file\n  clui -D -l es -C Emoji > Emoji-es.csv\n\n  Search descriptions for substring \"family\" and expand multi-code point ZWJ sequences \n  clui -X -Sd \"family\"\n\t"
+	echo -e "${helpText}" | less
+	exit 0
+}
+
+########
+# MAIN #
+########
+
+#turn off globbing so * is not expanded in characer search
+set -f
+
+#if control-c or other interruption, we can close up our JSON and RTF output
+trap 'finishUp' TERM INT HUP
+
+#turn on debug output if Shift key held down
+shiftKeyDown="$(osascript -l JavaScript -e "ObjC.import('Cocoa'); ($.NSEvent.modifierFlags & $.NSEventModifierFlagShift) > 1" 2>/dev/null)"
+#if /tmp/debug file found or Shift key is held down then xtrace debug output
+if [ -f /tmp/debug ] || [ "${shiftKeyDown}" = "true" ] || [ "${shiftKeyDown}" = "True" ]; then xtraceFlag=1; fi
+((${xtraceFlag})) && set -x
+
+#macOS version check (plutil raw output is the limiting factor for OS)
+if [ "$(sw_vers -productVersion | cut -d. -f1)" -le 12 ]; then
+	echo "macOS Monterey (12) or higher required, exiting" >&2
+	exit 1
+fi
+
+#process any options
+while getopts ":E:f:L:l:O:U:S:CDFGhHpruVxX" option; do
+	case "${option}" in
+		p) preserveCase=1
+			;;
+		#discrete descriptions
+		D)
+			#GLOBAL used in outputCharInfo
+			DISCRETE_DESCRIPTIONS=1
+			;;
+		#locale
+		l)
+			if [ -d "/System/Library/PrivateFrameworks/CoreEmoji.framework/Versions/A/Resources/${OPTARG}.lproj" ]; then
+				#GLOBAL used in: getCharsByDescriptionSearch() getDescriptionByCharMatch() outputCharInfo() findMatchingChars() (defaults to en)
+				LOCALE="${OPTARG}"
+			else
+				echo "Invalid locale: ${OPTARG}" >&2
+				exit 1
+			fi
+		;;
+		#font size -f [large,small]
+		f)
+			#get CSV data for font sizes
+			#match the size scale in TextEdit where the GUI is 2x what is in the RTF doc
+			f_param1=$(awk -F , '{print $1}' <<< "${OPTARG}")
+			((${f_param1})) && FONTSIZE_LARGE="$((2 * f_param1))"
+			f_param2=$(awk -F , '{print $2}' <<< "${OPTARG}")
+			((${f_param2})) && FONTSIZE_SMALL="$((2 * f_param2))"
+			;;
+		#usage
+		u)
+			printUsage
+			exit 0
+			;;
+		#list categories or groups
+		L)
+			case "${OPTARG}" in
+				C|c)
+					[ "${OPTARG}" = "C" ] && expandCategory=1
+					listType="CATEGORY"
+					;;
+				#list Groups of fonts
+				G|g)
+					[ "${OPTARG}" = "G" ] && expandGroup=1
+					listType="GROUP"
+					;;
+				l)
+					listType="LOCALE"
+				;;
+			esac
+			;;
+		G) [ -z "${searchMethod}" ] && searchMethod="GROUP" ;;
+		C) [ -z "${searchMethod}" ] && searchMethod="CATEGORY" ;;
+		S)
+			case ${OPTARG} in
+				d) [ -z "${searchMethod}" ] && searchMethod="DESCRIPTION" ;;
+				c) [ -z "${searchMethod}" ] && searchMethod="CHARACTER" ;;
+				C) [ -z "${searchMethod}" ] && searchMethod="CHARACTER" && relatedChars=1 ;;
+			esac
+			;;
+		F) filterFitzpatrick=1 ;;
+		H) HIDE_UNDESCRIBED=1 ;; #GLOBAL used in outputCharInfo
+		h) headerOff=1 ;;
+		E) encodingScheme="${OPTARG}";;
+		V) verbatimMode=1 ;;
+		X|x)
+			#summarize strings before expansion
+			[ "${option}" = "X" ] && summarize=1
+			#put space between points
+			expand=1
+			;;
+		O)
+			case ${OPTARG} in
+				J) outputOption="JSONSEQ" ;;
+				j) outputOption="JSON" ;;
+				y) outputOption="YAML" ;;
+				p) outputOption="PLAIN" ;;
+				c) outputOption="CHARACTER" ;;
+				r|R) outputOption="RTF" ;;					
+				C|*) outputOption="CSV" ;;		
+			esac
+			;;
+		#do nothing for unknown options
+		'?') : ;;
+	esac
+done
+
+#if required shift parameters, OPTIND is only set after getopts
+[ ${OPTIND} -ge 2 ] && shift $((OPTIND-1))
+
+#list categories or groups and exit
+case "${listType}" in
+	"CATEGORY")
+		listCategories "${expandCategory}"
+		exit 0
+	;;
+	"GROUP")
+		listcategoryGroups "${expandGroup}"
+		exit 0
+	;;
+	"LOCALE")
+		listLocales
+		exit 0
+	;;
+esac
+
+#if we are piping in input, use that
+if ! [ -t '0' ]; then
+	#set positional parameters from cat input (IFS delimited)
+	set -- $(cat)
+#otherwise see if any input is provided, if not offer help
+elif [ "${1}" != $'\n' ] && [ -z "$(echo -n "$@")" ]; then
+	echo -e "clui (1.0) - Command Line Unicode Info (https://github.com/brunerd/clui)\nUsage: clui [options] <input> ... (option -u for usage help)"
+	exit 0
+fi
+
+#process each paramter, quote "$@" to split by positional parameter (unquoted $@ splits by IFS)
+for parameter in "$@"; do
+	#replace parameter with results for these cases
+	case "${searchMethod}" in
+		"DESCRIPTION")
+			#get characters, turning line feeds into commas to process each individually later
+			parameter=$(getCharsByDescriptionSearch "${parameter}")
+			[ -n "$parameter" ] && parameter=$(echo "${parameter}" | tr $'\n' ',') || continue
+			;;
+		"CATEGORY")
+			parameter=$(getCategoryCharacters "${parameter}")
+			;;
+		"GROUP")
+			parameter=$(getCategoryGroupCharacters "${parameter}")
+			;;
+	esac
+	
+	#verbatim (-V) do not processCodePoints()
+	if ((verbatimMode)); then
+		#-X show as-is first, if more than 1 char
+		if ((summarize)) && [ -n "${parameter:1:1}" ]; then
+			outputCharInfo "${parameter}" "${outputOption}" "${encodingScheme}"
+		fi
+
+		#-x expand each and every code point in string
+		if ((expand)); then
+			#go through each char
+			for ((i=0;;i++)); do
+				char="${parameter:$i:1}"
+				[ -z "${char}" ] && break
+				outputCharInfo "${char}" "${outputOption}" "${encodingScheme}"
+			done
+		#or treat entire parameter as a single entity
+		else
+			outputCharInfo "${parameter}" "${outputOption}" "${encodingScheme}"
+		fi
+		#process next parameter
+		continue
+	fi
+
+	#treat comma and newline delimited items discretely
+	IFS=$',\n'
+	for chunk in ${parameter}; do		
+		#transform any U+hhhh/0xhhhh representation to the literal character/sequence, space is not significant
+		chunk=$(processCodePoints "${chunk}")
+		
+		#only two ways to handle it
+		case "${chunk}" in
+			#if it has a hyphen treat as range (if misinterpreted use -V)
+			*-*)
+				#if it is simply a "-" alone
+				if [ "${chunk}" = "-" ]; then
+					start="-"
+				else
+					#Get our start and end (if it exists)
+					start="$(awk -F - '{print $1}' <<< "${chunk}")"
+					[ -z "${start}" ] && continue
+					end="$(awk -F - '{print $2}' <<< "${chunk}")"
+				fi
+				[ -z "${end}" ] && end="${start}"
+		
+				#ensure they are only a single code point, otherwise ignore and move of
+				[ "${start:1:1}" ] && continue
+				[ "${end:1:1}" ] && continue
+	
+				#get decimal of character
+				start=$(/usr/bin/printf "%d" "'${start}")
+				end=$(/usr/bin/printf "%d" "'${end}")
+				
+				#to increment or decrement, that is the question
+				if ((start <= end)); then
+					comparison="<="
+					inc_dec="i++"
+				else
+					inc_dec="i--"
+					comparison=">="
+				fi
+
+				## loop through code point(s)
+				for ((i=${start}; i ${comparison} end; ${inc_dec})); do
+					#if searching by character or related chars, get them and go through them
+					if [ "${searchMethod}" = "CHARACTER" ]; then
+						#get characters (newline delimited)
+						newChunk=$(findMatchingChars "$(unichr ${i})")
+						#get related characters also, if applicable (newline delimited also)
+						((relatedChars)) && newChunk+=$'\n'$(getRelatedCharacters "$(unichr ${i})")
+						#sort and uniq the results and turn into csv
+						for char in $(sort -h <<< "${newChunk}" | uniq); do
+							outputCharInfo "${char}" "${outputOption}" "${encodingScheme}"
+						done
+					else
+						[ "${i}" = 10 ] && char=$'\n' || char="$(unichr ${i})"
+						outputCharInfo "${char}" "${outputOption}" "${encodingScheme}"
+					fi
+				done
+				;;
+			#anything else, not a range
+			*)
+				#search for the character in other sequences
+				if [ "${searchMethod}" = "CHARACTER" ]; then
+					#get characters (newline delimited)
+					newChunk=$(findMatchingChars "${chunk}")
+					#get related characters also, if applicable (newline delimited also)
+					((relatedChars)) && newChunk+=$'\n'$(getRelatedCharacters "${chunk}")
+					#sort and uniq the results and output
+					for char in $(sort -h <<< "${newChunk}" | uniq); do
+						outputCharInfo "${char}" "${outputOption}" "${encodingScheme}"
+					done
+					continue
+				fi
+
+				#if over one code point
+				if [ -n "${chunk:1:1}" ]; then
+					#output version without fitzpatrick modifier if option on and modifier found
+					if ((filterFitzpatrick)) && hasFitzpatrickMod "${chunk}"; then
+						outputCharInfo "$(filterFitzpatrickModifier "${chunk}")" "${outputOption}" "${encodingScheme}"
+					fi
+
+					#if (-X) "summarize" the chunk first, display and get info as-is
+					if ((summarize)); then
+						outputCharInfo "${chunk}" "${outputOption}" "${encodingScheme}"
+					fi
+				fi
+
+				# if -x or -X go through each character
+				if ((expand)); then
+					for ((i=0;;i++)); do
+						char="${chunk:$i:1}"
+						[ -z "${char}" ] && break
+						outputCharInfo "${char}" "${outputOption}" "${encodingScheme}"
+					done
+				#if not expand, pass entire chunk to our string
+				else
+					outputCharInfo "${chunk}" "${outputOption}" "${encodingScheme}"
+				fi
+			;;
+		esac
+	done
+done
+
+#close up any output formats that need it
+finishUp
