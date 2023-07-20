@@ -3,6 +3,11 @@ Get the description, code point(s) and UTF encoding of Unicode characters and se
 
 Check out [blog entries on clui at brunerd.com](https://www.brunerd.com/blog/category/projects/clui/)
 
+## clui demo video
+
+See clui in action:  
+[![clui walkthrough](https://img.youtube.com/vi/KhNblOSffz4/0.jpg)](https://www.youtube.com/watch?v=KhNblOSffz4)
+
 ## clui usage
 `./clui -u` for usage/help output in `less`
 ```
@@ -18,20 +23,16 @@ Input can be:
 
 Output Options
 
- -D  Discrete fields for CharacterDB and localized AppleName.strings
+ -D  Discrete info fields for CharacterDB and localized AppleName.strings
 
- -f <char size, info size>  set font size of characters and info in RTF output (default: 256,32)
-
- -h  Hide headers for CSV output
-
- -H  Hide characters lacking descriptions
+ -H  Hide characters lacking info descriptions
 
  -l <localization>  
-     Show localized results (Emoji only), use -Ll to list available localizations
+     Show localized info (Emoji only). Use -Ll to list available localizations.
 
- -p  Preserve case of CharacterDB description/info          
+ -p  Preserve case of CharacterDB info          
  
- Encoding style for UTF
+ Encoding style for UTF field
   -E <encoding>
      h*   UTF-8 hexadecimal, space delimited and capitalized (NN) (default)
      H    Hex HTML Entity UTF-32 (&#xnnnn;)
@@ -51,6 +52,10 @@ Output Options
      p    Plain output (no field descriptions)
      r    RTF output (plain output with large sized characters)
      y    YAML output
+
+  Format dependent output options
+   -f <char size, info size>  set font size for RTF output of char and info fields (default: 256,32)
+   -h  Hide headers for CSV output
      
 Input Options
 
@@ -71,10 +76,10 @@ Input Options
     c    Search for character in other Unicode sequences
     C    Search for character plus "related characters"
 
- -x  Expand, describe each individual code point in a sequence
+ -x  Expand and describe each individual code point in a sequence
  -X  Expand plus display original sequence prior to expansion
 
- -V  Verbatim, process input as-is without delimitation or conversion of code points
+ -V  Verbatim, process input raw/as-is, no additional interpretation or delimitation
   
 Other Modes
 
